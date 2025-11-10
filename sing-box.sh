@@ -1375,8 +1375,15 @@ EOF
 EOF
 
     # 生成 endpoint 配置 (私钥改为自动生成，并对文件设置严格权限)
+    # 如果已有配置文件，优先复用其中的 private_key，避免在每次运行时覆盖导致 WireGuard/WARP 关联失效
     # 如果在首次安装阶段，$DIR 指向包含 sing-box 可执行文件的目录，使用其生成随机数据以保证一致性
-    WIREGUARD_PRIVATE=$($DIR/sing-box generate rand --base64 32 2>/dev/null || openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)
+    if [ -s "${WORK_DIR}/conf/02_endpoints.json" ]; then
+      WIREGUARD_PRIVATE=$(awk -F '"' '/"private_key"/{print $4; exit}' "${WORK_DIR}/conf/02_endpoints.json") || true
+    fi
+
+    if [ -z "${WIREGUARD_PRIVATE}" ]; then
+      WIREGUARD_PRIVATE=$($DIR/sing-box generate rand --base64 32 2>/dev/null || openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)
+    fi
 
     # 将文件写入时使用受限 umask，写完后设置 600 权限，避免凭据泄露
 
@@ -1391,7 +1398,9 @@ EOF
     # peer 的 public key（Cloudflare 的端点公钥），允许通过环境变量覆盖；保留一个默认值以兼容现有行为
     WIREGUARD_PEER_PUBLIC=${WIREGUARD_PEER_PUBLIC:-"bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="}
 
-    (umask 077; cat > "${WORK_DIR}/conf/02_endpoints.json" << EOF
+    # 仅当目标文件不存在时才写入新文件，避免在重新运行或变更协议时覆盖已有的 WireGuard 私钥
+    if [ ! -s "${WORK_DIR}/conf/02_endpoints.json" ]; then
+      (umask 077; cat > "${WORK_DIR}/conf/02_endpoints.json" << EOF
 {
     "endpoints":[
         {
@@ -1423,8 +1432,9 @@ EOF
     ]
 }
 EOF
-    )
-    chmod 600 "${WORK_DIR}/conf/02_endpoints.json" 2>/dev/null || true
+      )
+      chmod 600 "${WORK_DIR}/conf/02_endpoints.json" 2>/dev/null || true
+    fi
 
     # 生成 route 配置
     cat > ${WORK_DIR}/conf/03_route.json << EOF
