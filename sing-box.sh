@@ -1374,8 +1374,24 @@ EOF
 }
 EOF
 
-    # 生成 endpoint 配置
-    cat > ${WORK_DIR}/conf/02_endpoints.json << EOF
+    # 生成 endpoint 配置 (私钥改为自动生成，并对文件设置严格权限)
+    # 如果在首次安装阶段，$DIR 指向包含 sing-box 可执行文件的目录，使用其生成随机数据以保证一致性
+    WIREGUARD_PRIVATE=$($DIR/sing-box generate rand --base64 32 2>/dev/null || openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)
+
+    # 将文件写入时使用受限 umask，写完后设置 600 权限，避免凭据泄露
+
+    # 尝试由私钥推导本端的 public key（如果系统上有 wg 工具）
+    WIREGUARD_PUBLIC=""
+    if command -v wg >/dev/null 2>&1; then
+      # wg pubkey 可以直接读取 base64 私钥或原始私钥字节流，尝试两种方式
+      WIREGUARD_PUBLIC=$(echo "${WIREGUARD_PRIVATE}" | wg pubkey 2>/dev/null || echo "${WIREGUARD_PRIVATE}" | base64 -d 2>/dev/null | wg pubkey 2>/dev/null) || true
+      WIREGUARD_PUBLIC=$(echo "${WIREGUARD_PUBLIC}" | tr -d '\r\n')
+    fi
+
+    # peer 的 public key（Cloudflare 的端点公钥），允许通过环境变量覆盖；保留一个默认值以兼容现有行为
+    WIREGUARD_PEER_PUBLIC=${WIREGUARD_PEER_PUBLIC:-"bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="}
+
+    (umask 077; cat > "${WORK_DIR}/conf/02_endpoints.json" << EOF
 {
     "endpoints":[
         {
@@ -1386,12 +1402,12 @@ EOF
                 "172.16.0.2/32",
                 "2606:4700:110:8a36:df92:102a:9602:fa18/128"
             ],
-            "private_key":"YFYOAdbw1bKTHlNNi+aEjBM3BO7unuFC5rOkMRAz9XY=",
+            "private_key":"${WIREGUARD_PRIVATE}",
             "peers": [
               {
                 "address": "engage.cloudflareclient.com",
                 "port":2408,
-                "public_key":"bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+                "public_key":"${WIREGUARD_PEER_PUBLIC}",
                 "allowed_ips": [
                   "0.0.0.0/0",
                   "::/0"
@@ -1407,6 +1423,8 @@ EOF
     ]
 }
 EOF
+    )
+    chmod 600 "${WORK_DIR}/conf/02_endpoints.json" 2>/dev/null || true
 
     # 生成 route 配置
     cat > ${WORK_DIR}/conf/03_route.json << EOF
